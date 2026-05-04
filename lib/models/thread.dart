@@ -187,6 +187,7 @@ class Thread extends HiveObject implements Filterable {
 	}
 
 	Future<bool> preinit({bool catalog = false}) async {
+		if (posts_.isEmpty) return false;
 		// mergePosts can leave the last post untouched.
 		// But many other posts may have been updated (upvote count).
 		// Decent solution - just check OP

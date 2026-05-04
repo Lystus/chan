@@ -1580,7 +1580,7 @@ class ThreadPageState extends State<ThreadPage> {
 		final theme = context.watch<SavedTheme>();
 		final titleText =
 			(persistentState.thread?.title ?? site.getThreadFromCatalogCache(widget.thread)?.title)?.nonEmptyOrNull
-			?? (persistentState.thread ?? site.getThreadFromCatalogCache(widget.thread))?.posts_.first.buildText().nonEmptyOrNull;
+			?? (persistentState.thread ?? site.getThreadFromCatalogCache(widget.thread))?.posts_.tryFirst?.buildText().nonEmptyOrNull;
 		String title;
 		if (site.supportsMultipleBoards && !site.hasSharedIdSpace) {
 			if (titleText != null) {
@@ -2207,8 +2207,30 @@ class ThreadPageState extends State<ThreadPage> {
 																		// Cache was evicted before the preservation fix was deployed.
 																		// Fall through to a live network fetch to repopulate the cache.
 																	}
-																	final freshPosts = (await _getUpdatedThread(options.cancelToken)).posts;
-																	// If the fetch succeeded and the thread is live, correct the stale
+																	final List<Post> freshPosts;
+																	try {
+																		freshPosts = (await _getUpdatedThread(options.cancelToken)).posts;
+																	} on ThreadNotFoundException {
+																		// Thread is confirmed gone from the server and its cache was already
+																		// evicted. Save a tombstone so future opens serve from cache (isArchived=true
+																		// drives disableUpdates) instead of retrying the 404 every time.
+																		final tombstone = Thread(
+																			posts_: const [],
+																			isArchived: true,
+																			replyCount: 0,
+																			imageCount: 0,
+																			id: widget.thread.id,
+																			board: widget.thread.board,
+																			title: persistentState.thread?.title,
+																			isSticky: false,
+																			time: DateTime.fromMillisecondsSinceEpoch(0),
+																			attachments: const [],
+																		);
+																		persistentState.thread = tombstone;
+																		await persistentState.save();
+																		return const <Post>[];
+																	}
+																	// Fetch succeeded and the thread is live — correct the stale
 																	// isArchivedOnServer flag so future refreshes use the normal path.
 																	final dlRecord = ThreadDownloadService.instance.getStatus(widget.thread, imageboard.key);
 																	if (dlRecord?.isArchivedOnServer == true && !persistentState.disableUpdates) {
