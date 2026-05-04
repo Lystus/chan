@@ -51,6 +51,8 @@ class DownloadedThread extends HiveObject {
 	String? localThumbnailFilename;
 	@HiveField(14)
 	bool isArchivedOnServer;
+	@HiveField(15)
+	DateTime? pendingDeleteAt;
 
 	DownloadedThread({
 		required this.imageboardKey,
@@ -68,6 +70,7 @@ class DownloadedThread extends HiveObject {
 		this.errorMessage,
 		this.localThumbnailFilename,
 		this.isArchivedOnServer = false,
+		this.pendingDeleteAt,
 	});
 
 	String get boxKey => '${imageboardKey}_${board}_$threadId';

@@ -56,7 +56,8 @@ class ThreadDownloadService {
 
 	StreamSubscription<PersistentThreadState>? _threadStateSubscription;
 	static Timer? _autoSyncTimer;
-	bool _migrationCancelled = false;
+	bool _uploadMigrationCancelled = false;
+	bool _downloadMigrationCancelled = false;
 
 	ThreadDownloadService._(this._box, this._downloadsDir);
 
@@ -64,6 +65,8 @@ class ThreadDownloadService {
 		final box = Hive.box<DownloadedThread>(_boxName);
 		final downloadsDir = Persistence.downloadsDirectory;
 		instance = ThreadDownloadService._(box, downloadsDir);
+		// Purge threads past their soft-delete grace period
+		await instance.processPendingDeletes();
 		// Reset any interrupted downloads to pending so resumePending() can restart them
 		for (final record in box.values) {
 			if (record.status == DownloadStatus.downloading || record.status == DownloadStatus.updating) {
@@ -128,6 +131,7 @@ class ThreadDownloadService {
 			Settings.instance.addAppResumeCallback(_autoSync);
 			return;
 		}
+		processPendingDeletes(); // fire-and-forget: purge expired soft-deletes on each auto-sync cycle
 		for (final record in _box.values) {
 			if (record.status != DownloadStatus.complete) continue;
 			if (record.isArchivedOnServer) continue;
@@ -203,8 +207,33 @@ class ThreadDownloadService {
 		_cancelTokens[key]?.cancel('User cancelled');
 	}
 
-	/// Delete all local files and the DB record for a thread.
+	/// Soft-deletes a thread: marks it pending deletion in 5 days.
+	/// Call [undoDeleteDownload] within the grace period to cancel.
 	Future<void> deleteDownload(ThreadIdentifier id, String imageboardKey) async {
+		final key = _key(imageboardKey, id);
+		final mutex = _mutexFor(key);
+		await mutex.protect(() async {
+			final record = _box.get(key);
+			if (record == null) return;
+			record.pendingDeleteAt = DateTime.now().add(const Duration(days: 5));
+			await record.save();
+		});
+	}
+
+	/// Cancels a pending soft-delete, restoring the thread to normal state.
+	Future<void> undoDeleteDownload(ThreadIdentifier id, String imageboardKey) async {
+		final key = _key(imageboardKey, id);
+		final mutex = _mutexFor(key);
+		await mutex.protect(() async {
+			final record = _box.get(key);
+			if (record == null) return;
+			record.pendingDeleteAt = null;
+			await record.save();
+		});
+	}
+
+	/// Permanently removes a thread and all its files immediately.
+	Future<void> hardDeleteDownload(ThreadIdentifier id, String imageboardKey) async {
 		final key = _key(imageboardKey, id);
 		cancelDownload(id, imageboardKey);
 
@@ -221,6 +250,16 @@ class ThreadDownloadService {
 		});
 		_pendingCancels.remove(key);
 		_mutexes.remove(key);
+	}
+
+	/// Purges all threads whose [pendingDeleteAt] has passed.
+	/// Call this on app startup.
+	Future<void> processPendingDeletes() async {
+		final now = DateTime.now();
+		final expired = _box.values.where((r) => r.pendingDeleteAt != null && r.pendingDeleteAt!.isBefore(now)).toList();
+		for (final record in expired) {
+			await hardDeleteDownload(record.identifier, record.imageboardKey);
+		}
 	}
 
 	/// Current status record; null if not downloaded.
@@ -260,7 +299,7 @@ class ThreadDownloadService {
 			status: DownloadStatus.complete,
 			totalFiles: totalFiles,
 			downloadedFiles: totalFiles,
-			isArchivedOnServer: true,
+			isArchivedOnServer: false,
 		);
 		await _box.put(key, record);
 		return true;
@@ -374,15 +413,18 @@ class ThreadDownloadService {
 		return null;
 	}
 
-	/// Cancel an in-progress migration started by [migrateLocalFilesToCopyparty].
-	void cancelMigration() => _migrationCancelled = true;
+	/// Cancel an in-progress upload migration started by [migrateLocalFilesToCopyparty].
+	void cancelMigration() => _uploadMigrationCancelled = true;
+
+	/// Cancel an in-progress download migration started by [migrateFromCopypartyToLocal].
+	void cancelDownloadMigration() => _downloadMigrationCancelled = true;
 
 	/// Scans all [complete] thread directories for local files and uploads each to
 	/// CopyParty, deleting the local copy only after a confirmed [CopyPartySyncResult.ok].
 	/// Any auth or server failure stops the migration immediately — unprocessed files
 	/// remain on disk. Yields [MigrationProgress] snapshots throughout.
 	Stream<MigrationProgress> migrateLocalFilesToCopyparty({List<DownloadedThread>? only}) async* {
-		_migrationCancelled = false;
+		_uploadMigrationCancelled = false;
 
 		final serverUrl = Persistence.settings.copypartyServerUrl;
 		final destRoot = Persistence.settings.copypartyDestRoot;
@@ -395,7 +437,6 @@ class ThreadDownloadService {
 
 		final password = await storage.read(key: 'copypartyPassword') ?? '';
 		print('[CopyParty] migrateLocalFilesToCopyparty: password=${password.isNotEmpty ? 'set' : 'empty'}');
-		final base = serverUrl.endsWith('/') ? serverUrl.substring(0, serverUrl.length - 1) : serverUrl;
 		final baseRoot = destRoot.endsWith('/') ? destRoot.substring(0, destRoot.length - 1) : destRoot;
 
 		// Phase 1: discover all eligible local files across complete thread dirs.
@@ -434,7 +475,7 @@ class ThreadDownloadService {
 		}
 
 		for (final entry in filesToUpload) {
-			if (_migrationCancelled) break;
+			if (_uploadMigrationCancelled) break;
 			// Re-check: if record left complete state since Phase 1 (e.g. download started), skip safely
 			if (entry.record.status != DownloadStatus.complete) continue;
 			// File may have been deleted by concurrent _runDownload since Phase 1 snapshot — skip safely
@@ -505,6 +546,127 @@ class ThreadDownloadService {
 	/// Returns the stored CopyParty password, or null/empty if not set.
 	Future<String?> getCopypartyPassword() async => storage.read(key: 'copypartyPassword');
 
+	/// Download all CopyParty-synced files for the given records (or all complete
+	/// records with syncedFiles > 0) back to local storage. This is the reverse of
+	/// [migrateLocalFilesToCopyparty]. Only files that are actually missing locally
+	/// are downloaded — existing files are skipped (idempotent). Yields
+	/// [MigrationProgress] snapshots throughout.
+	Stream<MigrationProgress> migrateFromCopypartyToLocal({List<DownloadedThread>? only}) async* {
+		_downloadMigrationCancelled = false;
+
+		final serverUrl = Persistence.settings.copypartyServerUrl;
+		final destRoot = Persistence.settings.copypartyDestRoot;
+		if (serverUrl.isEmpty) {
+			yield const MigrationProgress(totalFiles: 0, processedFiles: 0, uploadedFiles: 0, error: 'Server URL not configured', isDone: true);
+			return;
+		}
+
+		final password = await storage.read(key: 'copypartyPassword') ?? '';
+		final base = serverUrl.endsWith('/') ? serverUrl.substring(0, serverUrl.length - 1) : serverUrl;
+		final baseRoot = destRoot.endsWith('/') ? destRoot.substring(0, destRoot.length - 1) : destRoot;
+
+		// Phase 1: discover all eligible remote files (syncedFiles > 0 and file missing locally).
+		final eligibleRecords = (only ?? _box.values)
+				.where((r) => r.status == DownloadStatus.complete && r.syncedFiles > 0)
+				.toList();
+
+		final dio = Dio()..options.connectTimeout = 15000..options.receiveTimeout = 30000;
+		final filesToFetch = <({Uri remoteUri, File localFile, DownloadedThread record, String filename})>[];
+		int total = 0;
+		int processed = 0;
+		int fetched = 0;
+		final Map<DownloadedThread, int> fetchedPerRecord = {};
+		try {
+		for (final record in eligibleRecords) {
+			// Query the CopyParty directory listing to discover remote files.
+			final listUri = Uri.parse('$base$baseRoot/${record.imageboardKey}/${record.board}/${record.threadId}/').replace(
+				queryParameters: {
+					'ls': '',
+					if (password.isNotEmpty) 'pw': password,
+				},
+			);
+			try {
+				final resp = await dio.getUri<Map<String, dynamic>>(listUri);
+				final files = (resp.data?['files'] as List?)?.cast<Map<String, dynamic>>() ?? [];
+				for (final f in files) {
+					final name = f['fn'] as String? ?? f['n'] as String? ?? '';
+					if (name.isEmpty || name.endsWith('.part')) continue;
+					if (name.contains('..') || name.contains('/') || name.contains('\\')) continue;
+					final localFile = _fileForName(record, name);
+					if (localFile.existsSync()) continue; // already local, skip
+					final remoteUri = Uri.parse('$base$baseRoot/${record.imageboardKey}/${record.board}/${record.threadId}/$name');
+					filesToFetch.add((remoteUri: remoteUri, localFile: localFile, record: record, filename: name));
+				}
+			} catch (_) {
+				// If listing fails, we'll report it during the download phase gracefully
+			}
+		}
+
+		total = filesToFetch.length;
+		yield MigrationProgress(totalFiles: total, processedFiles: 0, uploadedFiles: 0);
+
+		for (final entry in filesToFetch) {
+			if (_downloadMigrationCancelled) break;
+			if (entry.localFile.existsSync()) {
+				// Already appeared locally since Phase 1 (race), count as done
+				processed++;
+				yield MigrationProgress(totalFiles: total, processedFiles: processed, uploadedFiles: fetched);
+				continue;
+			}
+			try {
+				await entry.localFile.parent.create(recursive: true);
+				final tmpFile = File('${entry.localFile.path}.part');
+				final headers = password.isNotEmpty ? {'Pw': password} : <String, dynamic>{};
+				await dio.downloadUri(
+					entry.remoteUri,
+					tmpFile.path,
+					options: Options(headers: headers, responseType: ResponseType.bytes),
+				);
+				await tmpFile.rename(entry.localFile.path);
+				fetched++;
+				fetchedPerRecord[entry.record] = (fetchedPerRecord[entry.record] ?? 0) + 1;
+			} catch (e) {
+				// Treat download error as non-fatal; report and stop
+				for (final r in fetchedPerRecord.keys) {
+					final count = fetchedPerRecord[r]!;
+					r.syncedFiles = r.syncedFiles > count ? r.syncedFiles - count : 0;
+					r.lastSyncedAt = DateTime.now();
+					if (r.isInBox) await r.save();
+				}
+				yield MigrationProgress(totalFiles: total, processedFiles: processed, uploadedFiles: fetched, error: 'Download failed: $e — migration stopped, downloaded files are safe', isDone: true);
+				return;
+			}
+			processed++;
+			yield MigrationProgress(totalFiles: total, processedFiles: processed, uploadedFiles: fetched);
+		}
+		} finally {
+			dio.close();
+		}
+
+		// Reset syncedFiles for all records that were touched OR whose files were already local.
+		// Covers the case where Phase 1 skipped all files because they were already on disk.
+		final allCandidateRecords = {...fetchedPerRecord.keys, ...eligibleRecords};
+		for (final r in allCandidateRecords) {
+			// Count local files now
+			final dir = _threadDirFor(r);
+			final localCount = dir.existsSync()
+					? (await dir.list().where((e) => e is File && !e.path.endsWith('.part')).length)
+					: 0;
+			// If at least the same count as totalFiles, consider fully local again
+			if (localCount >= r.totalFiles && r.totalFiles > 0) {
+				r.syncedFiles = 0;
+				r.lastSyncedAt = null;
+			} else if (fetchedPerRecord.containsKey(r)) {
+				// Partially restored — clear synced count proportionally
+				r.syncedFiles = 0;
+				r.lastSyncedAt = DateTime.now();
+			}
+			if (r.isInBox) await r.save();
+		}
+
+		yield MigrationProgress(totalFiles: total, processedFiles: processed, uploadedFiles: fetched, isDone: true);
+	}
+
 	/// Scan the downloads directory and create records for any folders not yet known.
 	/// Used to import downloads from Kuroba or other sources after a manual folder copy.
 	Future<ImportScanResult> scanDownloadsDirectory() async {
@@ -554,7 +716,7 @@ class ThreadDownloadService {
 					if (Persistence.isThreadCached(imageboardKey, board, threadId)) {
 						final thread = await Persistence.getCachedThread(imageboardKey, board, threadId);
 						final op = thread?.posts_.firstOrNull;
-						final rawTitle = thread?.title ?? op?.text?.trim();
+						final rawTitle = thread?.title ?? op?.text.trim();
 						title = rawTitle != null && rawTitle.length > 100
 								? rawTitle.substring(0, 100)
 								: rawTitle;
@@ -630,9 +792,7 @@ class ThreadDownloadService {
 			}
 
 			// extended_image caches images (and is a fallback for anything else)
-			if (source == null) {
-				source = await getCachedImageFile(url);
-			}
+			source ??= await getCachedImageFile(url);
 
 			if (source != null && source.existsSync()) {
 				await source.copy(dest.path);
@@ -680,7 +840,7 @@ class ThreadDownloadService {
 
 				// 2. Update metadata from thread
 				final opPost = thread.posts_.firstOrNull;
-				final rawTitle = thread.title ?? opPost?.text?.trim();
+				final rawTitle = thread.title ?? opPost?.text.trim();
 				record.title = rawTitle != null && rawTitle.length > 100
 					? rawTitle.substring(0, 100)
 					: rawTitle;
@@ -812,9 +972,7 @@ class ThreadDownloadService {
 						if (!thumbPreExisted) {
 							record.downloadedFiles++;
 							// Store first OP thumbnail filename for the list UI
-							if (record.localThumbnailFilename == null) {
-								record.localThumbnailFilename = thumbFilename;
-							}
+							record.localThumbnailFilename ??= thumbFilename;
 							saveCount++;
 							if (saveCount % 10 == 0 && record.isInBox) await record.save();
 						}

@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:chan/models/downloaded_thread.dart';
+import 'package:chan/util.dart';
 import 'package:chan/models/thread.dart';
 import 'package:chan/pages/thread.dart';
 import 'package:chan/services/imageboard.dart';
@@ -13,12 +14,11 @@ import 'package:chan/services/util.dart';
 import 'package:chan/widgets/adaptive.dart';
 import 'package:chan/widgets/imageboard_scope.dart';
 import 'package:chan/widgets/thread_row.dart';
-import 'package:chan/widgets/util.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
-import 'package:hive/hive.dart';
 import 'package:provider/provider.dart';
+import 'package:share_plus/share_plus.dart';
 
 enum _DownloadSortMethod {
 	downloadedAt,
@@ -123,28 +123,22 @@ class _DownloadedThreadsPageState extends State<DownloadedThreadsPage> {
 	}
 
 	Future<void> _delete(DownloadedThread d) async {
-		final confirmed = await showAdaptiveDialog<bool>(
-			context: context,
-			builder: (ctx) => AdaptiveAlertDialog(
-				title: const Text('Delete download?'),
-				content: const Text('All downloaded files for this thread will be removed.'),
-				actions: [
-					AdaptiveDialogAction(
-						child: const Text('Cancel'),
-						onPressed: () => Navigator.pop(ctx, false),
-					),
-					AdaptiveDialogAction(
-						isDestructiveAction: true,
-						child: const Text('Delete'),
-						onPressed: () => Navigator.pop(ctx, true),
-					),
-				],
+		await ThreadDownloadService.instance.deleteDownload(d.identifier, d.imageboardKey);
+		if (!mounted) return;
+		setState(_reload);
+		// Use clearSnackBars so subsequent rapid deletes don't silently discard Undo
+		ScaffoldMessenger.of(context).clearSnackBars();
+		ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+			content: const Text('Thread marked for deletion in 5 days'),
+			action: SnackBarAction(
+				label: 'Undo',
+				onPressed: () async {
+					await ThreadDownloadService.instance.undoDeleteDownload(d.identifier, d.imageboardKey);
+					if (mounted) setState(_reload);
+				},
 			),
-		);
-		if (confirmed == true) {
-			await ThreadDownloadService.instance.deleteDownload(d.identifier, d.imageboardKey);
-			if (mounted) setState(_reload);
-		}
+			duration: const Duration(seconds: 6),
+		));
 	}
 
 	Future<void> _update(DownloadedThread d) async {
@@ -286,40 +280,40 @@ class _DownloadedThreadsPageState extends State<DownloadedThreadsPage> {
 		});
 	}
 
-	DownloadedThread? _findByBoxKey(String key) {
-		for (final d in _downloads) {
-			if (d.boxKey == key) return d;
+	Future<void> _deleteSelected() async {
+		final selected = _sortedDownloads.where((d) => _selectedBoxKeys.contains(d.boxKey)).toList();
+		for (final d in selected) {
+			await ThreadDownloadService.instance.deleteDownload(d.identifier, d.imageboardKey);
 		}
-		return null;
+		if (!mounted) return;
+		final count = selected.length;
+		setState(() {
+			_selectedBoxKeys.clear();
+			_isSelecting = false;
+			_reload();
+		});
+		ScaffoldMessenger.of(context).clearSnackBars();
+		ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+			content: Text('$count thread${count == 1 ? '' : 's'} marked for deletion in 5 days'),
+			action: SnackBarAction(
+				label: 'Undo',
+				onPressed: () async {
+					for (final d in selected) {
+						await ThreadDownloadService.instance.undoDeleteDownload(d.identifier, d.imageboardKey);
+					}
+					if (mounted) setState(_reload);
+				},
+			),
+			duration: const Duration(seconds: 6),
+		));
 	}
 
-	Future<void> _deleteSelected() async {
-		final count = _selectedBoxKeys.length;
-		final confirmed = await showAdaptiveDialog<bool>(
+	Future<void> _migrateSelected() async {
+		final selected = _sortedDownloads.where((d) => _selectedBoxKeys.contains(d.boxKey)).toList();
+		await showAdaptiveDialog(
 			context: context,
-			builder: (ctx) => AdaptiveAlertDialog(
-				title: Text('Delete $count thread${count == 1 ? '' : 's'}?'),
-				content: const Text('All downloaded files for the selected threads will be removed.'),
-				actions: [
-					AdaptiveDialogAction(
-						child: const Text('Cancel'),
-						onPressed: () => Navigator.pop(ctx, false),
-					),
-					AdaptiveDialogAction(
-						isDestructiveAction: true,
-						child: const Text('Delete'),
-						onPressed: () => Navigator.pop(ctx, true),
-					),
-				],
-			),
+			builder: (ctx) => _MigrateSelectedDialog(records: selected),
 		);
-		if (confirmed != true || !mounted) return;
-		for (final key in List<String>.from(_selectedBoxKeys)) {
-			final d = _findByBoxKey(key);
-			if (d != null) {
-				await ThreadDownloadService.instance.deleteDownload(d.identifier, d.imageboardKey);
-			}
-		}
 		if (mounted) {
 			setState(() {
 				_selectedBoxKeys.clear();
@@ -329,11 +323,11 @@ class _DownloadedThreadsPageState extends State<DownloadedThreadsPage> {
 		}
 	}
 
-	Future<void> _migrateSelected() async {
+	Future<void> _moveSelectedToLocal() async {
 		final selected = _sortedDownloads.where((d) => _selectedBoxKeys.contains(d.boxKey)).toList();
 		await showAdaptiveDialog(
 			context: context,
-			builder: (ctx) => _MigrateSelectedDialog(records: selected),
+			builder: (ctx) => _MoveToLocalDialog(records: selected),
 		);
 		if (mounted) {
 			setState(() {
@@ -374,6 +368,12 @@ class _DownloadedThreadsPageState extends State<DownloadedThreadsPage> {
 								onPressed: _migrateSelected,
 								child: const Icon(CupertinoIcons.cloud_upload),
 							),
+						if (Persistence.settings.copypartyEnabled && _sortedDownloads.any((d) => _selectedBoxKeys.contains(d.boxKey) && d.syncedFiles > 0))
+							CupertinoButton(
+								padding: EdgeInsets.zero,
+								onPressed: _moveSelectedToLocal,
+								child: const Icon(CupertinoIcons.cloud_download),
+							),
 						if (_selectedBoxKeys.isNotEmpty)
 							CupertinoButton(
 								padding: EdgeInsets.zero,
@@ -391,10 +391,10 @@ class _DownloadedThreadsPageState extends State<DownloadedThreadsPage> {
 							child: Icon(_sortReversed ? CupertinoIcons.sort_up : CupertinoIcons.sort_down),
 						),
 						if (_isImporting)
-							CupertinoButton(
+							const CupertinoButton(
 								padding: EdgeInsets.zero,
 								onPressed: null,
-								child: const CupertinoActivityIndicator(),
+								child: CupertinoActivityIndicator(),
 							)
 						else
 							CupertinoButton(
@@ -413,7 +413,7 @@ class _DownloadedThreadsPageState extends State<DownloadedThreadsPage> {
 				children: [
 					if (_isImporting)
 						Container(
-						color: theme.primaryColor.withOpacity(0.1),
+						color: theme.primaryColor.withValues(alpha: 0.1),
 							padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
 							child: Row(
 								children: [
@@ -446,12 +446,46 @@ class _DownloadedThreadsPageState extends State<DownloadedThreadsPage> {
 								builder: (ctx) => _MigrateSelectedDialog(records: [d]),
 							);
 							if (mounted) setState(_reload);
+						},							onMoveToLocal: () async {
+								await showAdaptiveDialog(
+									context: context,
+									builder: (ctx) => _MoveToLocalDialog(records: [d]),
+								);
+								if (mounted) setState(_reload);
+							},
+						onExport: () async {
+							final result = await exportThreadAsZip(d);
+							if (!context.mounted) return;
+							if (result is KurobaExportFailure) {
+								showAdaptiveDialog(
+									context: context,
+									builder: (dialogCtx) => AdaptiveAlertDialog(
+										title: const Text('Export failed'),
+										content: Text(result.error),
+										actions: [AdaptiveDialogAction(child: const Text('OK'), onPressed: () => Navigator.pop(dialogCtx))],
+									),
+								);
+							} else if (result is KurobaExportSuccess) {
+								try {
+									await Share.shareXFiles([XFile(result.zipPath)], text: result.description);
+								} finally {
+									try { File(result.zipPath).deleteSync(); } catch (_) {}
+								}
+							}
 						},
 						onCancel: () {
 							ThreadDownloadService.instance.cancelDownload(d.identifier, d.imageboardKey);
 							setState(_reload);
 						},
 						onSelect: () => _enterSelectMode(d.boxKey),
+						onUndoDelete: () async {
+							await ThreadDownloadService.instance.undoDeleteDownload(d.identifier, d.imageboardKey);
+							if (mounted) setState(_reload);
+						},
+						onHardDelete: () async {
+							await ThreadDownloadService.instance.hardDeleteDownload(d.identifier, d.imageboardKey);
+							if (mounted) setState(_reload);
+						},
 						isSelecting: _isSelecting,
 						isSelected: _selectedBoxKeys.contains(d.boxKey),
 						);
@@ -470,8 +504,12 @@ class _DownloadedThreadRow extends StatefulWidget {
 	final VoidCallback onDelete;
 	final VoidCallback onUpdate;
 	final Future<void> Function() onMigrate;
+	final Future<void> Function() onMoveToLocal;
+	final Future<void> Function() onExport;
 	final VoidCallback onCancel;
 	final VoidCallback onSelect;
+	final VoidCallback onUndoDelete;
+	final VoidCallback onHardDelete;
 	final bool isSelecting;
 	final bool isSelected;
 
@@ -481,8 +519,12 @@ class _DownloadedThreadRow extends StatefulWidget {
 		required this.onDelete,
 		required this.onUpdate,
 		required this.onMigrate,
+		required this.onMoveToLocal,
+		required this.onExport,
 		required this.onCancel,
 		required this.onSelect,
+		required this.onUndoDelete,
+		required this.onHardDelete,
 		required this.isSelecting,
 		required this.isSelected,
 	});
@@ -546,12 +588,14 @@ class _DownloadedThreadRowState extends State<_DownloadedThreadRow> {
 		final canOpen = d.status == DownloadStatus.complete || d.status == DownloadStatus.failed || d.status == DownloadStatus.cancelled;
 
 		if (imageboard != null && thread != null) {
-			return GestureDetector(
+			return Opacity(
+				opacity: d.pendingDeleteAt != null ? 0.45 : 1.0,
+				child: GestureDetector(
 				onTap: (canOpen || widget.isSelecting) ? widget.onTap : null,
 				onLongPress: widget.isSelecting ? null : () => _showActionSheet(context, d),
 				child: Container(
 					decoration: BoxDecoration(
-						border: Border(bottom: BorderSide(color: theme.primaryColor.withOpacity(0.1))),
+						border: Border(bottom: BorderSide(color: theme.primaryColor.withValues(alpha: 0.1))),
 					),
 					child: Column(
 						crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -587,18 +631,21 @@ class _DownloadedThreadRowState extends State<_DownloadedThreadRow> {
 						],
 					),
 				),
+			),
 			);
 		}
 
 		// Fallback when thread data is not yet cached
 		final thumbnailUrl = d.thumbnailUrl;
-		return GestureDetector(
+		return Opacity(
+			opacity: d.pendingDeleteAt != null ? 0.45 : 1.0,
+			child: GestureDetector(
 			onTap: (canOpen || widget.isSelecting) ? widget.onTap : null,
 			onLongPress: widget.isSelecting ? null : () => _showActionSheet(context, d),
 			child: Container(
 				padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
 				decoration: BoxDecoration(
-					border: Border(bottom: BorderSide(color: theme.primaryColor.withOpacity(0.1))),
+					border: Border(bottom: BorderSide(color: theme.primaryColor.withValues(alpha: 0.1))),
 				),
 				child: Row(
 					children: [
@@ -607,7 +654,7 @@ class _DownloadedThreadRowState extends State<_DownloadedThreadRow> {
 							height: 60,
 							margin: const EdgeInsets.only(right: 12),
 							decoration: BoxDecoration(
-								color: theme.primaryColor.withOpacity(0.1),
+								color: theme.primaryColor.withValues(alpha: 0.1),
 								borderRadius: BorderRadius.circular(4),
 							),
 							child: d.localThumbnailFilename != null || thumbnailUrl != null
@@ -630,7 +677,7 @@ class _DownloadedThreadRowState extends State<_DownloadedThreadRow> {
 											d.title!,
 											maxLines: 2,
 											overflow: TextOverflow.ellipsis,
-											style: TextStyle(fontSize: 13, color: theme.primaryColor.withOpacity(0.8)),
+											style: TextStyle(fontSize: 13, color: theme.primaryColor.withValues(alpha: 0.8)),
 										),
 									const SizedBox(height: 4),
 									_statusWidget(context, d, progress),
@@ -641,6 +688,7 @@ class _DownloadedThreadRowState extends State<_DownloadedThreadRow> {
 					],
 				),
 			),
+		),
 		);
 	}
 
@@ -674,6 +722,16 @@ class _DownloadedThreadRowState extends State<_DownloadedThreadRow> {
 	}
 
 	Widget _statusWidget(BuildContext context, DownloadedThread d, double? progress) {
+		if (d.pendingDeleteAt != null) {
+			final daysLeft = d.pendingDeleteAt!.difference(DateTime.now()).inDays;
+			final countLabel = daysLeft <= 0 ? 'Deleting soon...' : 'Deletes in $daysLeft day${daysLeft == 1 ? '' : 's'}';
+			final dateStr = _formatDeleteDate(d.pendingDeleteAt!);
+			return Row(children: [
+				const Icon(CupertinoIcons.trash, size: 14, color: CupertinoColors.destructiveRed),
+				const SizedBox(width: 4),
+				Text('$countLabel · $dateStr', style: const TextStyle(fontSize: 12, color: CupertinoColors.destructiveRed)),
+			]);
+		}
 		switch (d.status) {
 			case DownloadStatus.pending:
 				return const Row(children: [
@@ -692,27 +750,7 @@ class _DownloadedThreadRowState extends State<_DownloadedThreadRow> {
 					),
 				]);
 			case DownloadStatus.complete:
-				return Row(children: [
-					const Icon(CupertinoIcons.checkmark_circle, size: 14, color: CupertinoColors.activeGreen),
-					const SizedBox(width: 4),
-					Text('${d.downloadedFiles} files · ${_formatDate(d.downloadedAt)}', style: const TextStyle(fontSize: 12)),
-					const SizedBox(width: 4),
-					_buildStorageIndicator(d),
-					if (d.isArchivedOnServer) ...[
-						const SizedBox(width: 6),
-						Container(
-							padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
-							decoration: BoxDecoration(
-								color: CupertinoColors.systemOrange.withOpacity(0.18),
-								borderRadius: BorderRadius.circular(4),
-							),
-							child: const Text(
-								'ARCHIVED',
-								style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: CupertinoColors.systemOrange),
-							),
-						),
-					],
-				]);
+				return _buildStorageIndicator(d);
 			case DownloadStatus.failed:
 				return Row(children: [
 					const Icon(CupertinoIcons.exclamationmark_triangle, size: 14, color: CupertinoColors.destructiveRed),
@@ -770,6 +808,22 @@ class _DownloadedThreadRowState extends State<_DownloadedThreadRow> {
 								widget.onMigrate();
 							},
 						),
+					if (Persistence.settings.copypartyEnabled && d.status == DownloadStatus.complete && d.syncedFiles > 0)
+						AdaptiveActionSheetAction(
+							child: const Text('Move back to local'),
+							onPressed: () {
+								Navigator.pop(popupContext);
+								widget.onMoveToLocal();
+							},
+						),
+					if (d.status == DownloadStatus.complete)
+						AdaptiveActionSheetAction(
+							child: const Text('Export as ZIP'),
+							onPressed: () {
+								Navigator.pop(popupContext);
+								widget.onExport();
+							},
+						),
 					AdaptiveActionSheetAction(
 						child: const Text('Select'),
 						onPressed: () {
@@ -777,14 +831,48 @@ class _DownloadedThreadRowState extends State<_DownloadedThreadRow> {
 							widget.onSelect();
 						},
 					),
-					AdaptiveActionSheetAction(
-						isDestructiveAction: true,
-						child: const Text('Delete'),
-						onPressed: () {
-							Navigator.pop(popupContext);
-							widget.onDelete();
-						},
-					),
+					if (d.pendingDeleteAt != null) ...[
+						AdaptiveActionSheetAction(
+							child: const Text('Undo delete'),
+							onPressed: () {
+								Navigator.pop(popupContext);
+								widget.onUndoDelete();
+							},
+						),
+						AdaptiveActionSheetAction(
+							isDestructiveAction: true,
+							child: const Text('Delete now'),
+							onPressed: () async {
+								Navigator.pop(popupContext);
+								final confirmed = await showAdaptiveDialog<bool>(
+									context: context,
+									builder: (ctx) => AdaptiveAlertDialog(
+										title: const Text('Delete immediately?'),
+										content: const Text('This will permanently delete the thread and all its files. This cannot be undone.'),
+										actions: [
+											AdaptiveDialogAction(
+												child: const Text('Cancel'),
+												onPressed: () => Navigator.pop(ctx, false),
+											),
+											AdaptiveDialogAction(
+												child: const Text('Delete', style: TextStyle(color: CupertinoColors.destructiveRed)),
+												onPressed: () => Navigator.pop(ctx, true),
+											),
+										],
+									),
+								);
+								if (confirmed == true) widget.onHardDelete();
+							},
+						),
+					] else
+						AdaptiveActionSheetAction(
+							isDestructiveAction: true,
+							child: const Text('Delete'),
+							onPressed: () {
+								Navigator.pop(popupContext);
+								widget.onDelete();
+							},
+						),
 				],
 				cancelButton: AdaptiveActionSheetAction(
 					child: const Text('Cancel'),
@@ -819,12 +907,94 @@ class _DownloadedThreadRowState extends State<_DownloadedThreadRow> {
 		);
 	}
 
-	String _formatDate(DateTime dt) {
-		final now = DateTime.now();
-		final diff = now.difference(dt);
-		if (diff.inDays == 0) return 'Today';
-		if (diff.inDays == 1) return 'Yesterday';
-		return '${dt.month}/${dt.day}/${dt.year}';
+	String _formatDeleteDate(DateTime dt) {
+		if (Persistence.settings.exactTimeUsesCustomDateFormat) {
+			return dt.formatDate(Persistence.settings.customDateFormat);
+		}
+		return '${dt.year}-${dt.month.toString().padLeft(2, '0')}-${dt.day.toString().padLeft(2, '0')}';
+	}
+}
+
+class _MoveToLocalDialog extends StatefulWidget {
+	final List<DownloadedThread> records;
+	const _MoveToLocalDialog({required this.records});
+	@override
+	State<_MoveToLocalDialog> createState() => _MoveToLocalDialogState();
+}
+
+class _MoveToLocalDialogState extends State<_MoveToLocalDialog> {
+	late final StreamSubscription<MigrationProgress> _sub;
+	MigrationProgress? _progress;
+
+	@override
+	void initState() {
+		super.initState();
+		_sub = ThreadDownloadService.instance.migrateFromCopypartyToLocal(only: widget.records).listen(
+			(p) { if (mounted) { setState(() => _progress = p); } },
+			onError: (e) {
+				if (mounted) { setState(() => _progress = MigrationProgress(
+					totalFiles: _progress?.totalFiles ?? 0,
+					processedFiles: _progress?.processedFiles ?? 0,
+					uploadedFiles: _progress?.uploadedFiles ?? 0,
+					error: e.toString(),
+					isDone: true,
+				)); }
+			},
+		);
+	}
+
+	@override
+	void dispose() {
+		_sub.cancel();
+		super.dispose();
+	}
+
+	@override
+	Widget build(BuildContext context) {
+		final p = _progress;
+		final isDone = p?.isDone ?? false;
+		final error = p?.error;
+		final frac = (p == null || p.totalFiles == 0) ? null : p.processedFiles / p.totalFiles;
+
+		return AdaptiveAlertDialog(
+			title: const Text('Move to local'),
+			content: Padding(
+				padding: const EdgeInsets.only(top: 12),
+				child: Column(
+					mainAxisSize: MainAxisSize.min,
+					crossAxisAlignment: CrossAxisAlignment.start,
+					children: [
+						if (p == null)
+							const Center(child: CircularProgressIndicator.adaptive())
+						else if (error != null)
+							Text(error, style: const TextStyle(color: CupertinoColors.destructiveRed))
+						else if (isDone)
+							Text('Done — ${p.uploadedFiles} file${p.uploadedFiles == 1 ? '' : 's'} downloaded locally.')
+						else ...[  
+							Text('Downloading ${p.processedFiles} / ${p.totalFiles}…'),
+							const SizedBox(height: 10),
+							LinearProgressIndicator(value: frac),
+						],
+					],
+				),
+			),
+			actions: [
+				if (isDone || error != null)
+					AdaptiveDialogAction(
+						isDefaultAction: true,
+						onPressed: () => Navigator.pop(context),
+						child: const Text('Done'),
+					)
+				else
+					AdaptiveDialogAction(
+						onPressed: () {
+							ThreadDownloadService.instance.cancelDownloadMigration();
+							Navigator.pop(context);
+						},
+						child: const Text('Cancel'),
+					),
+			],
+		);
 	}
 }
 

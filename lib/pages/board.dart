@@ -946,6 +946,32 @@ class BoardPageState extends State<BoardPage> {
 							setState(() {});
 						}
 					),
+					if (listFilterReason != null) ContextMenuAction(
+						child: Text('Filter: ${listFilterReason.reason.length > 50 ? '${listFilterReason.reason.substring(0, 50)}…' : listFilterReason.reason}', overflow: TextOverflow.ellipsis),
+						trailingIcon: CupertinoIcons.line_horizontal_3_decrease,
+						isDestructiveAction: false,
+						onPressed: () {}
+					),
+					if (isImageHidden && Settings.applyImageFilterToThreadsSetting.value) ContextMenuAction(
+						child: const Text('Unhide image'),
+						trailingIcon: CupertinoIcons.photo,
+						onPressed: () {
+							for (final attachment in thread.attachments.where((a) => a.md5.isNotEmpty)) {
+								Settings.instance.unHideByMD5(attachment.md5);
+							}
+							Settings.instance.didEdit();
+						}
+					)
+					else if (!isImageHidden && thread.attachments.any((a) => a.md5.isNotEmpty) && Settings.applyImageFilterToThreadsSetting.value) ContextMenuAction(
+						child: const Text('Hide image'),
+						trailingIcon: CupertinoIcons.photo,
+						onPressed: () {
+							for (final attachment in thread.attachments.where((a) => a.md5.isNotEmpty)) {
+								Settings.instance.hideByMD5(attachment.md5);
+							}
+							Settings.instance.didEdit();
+						}
+					),
 					ContextMenuAction(
 						child: isHidden ? const Text('Unhide...') : const Text('Hide...'),
 						trailingIcon: isHidden ? CupertinoIcons.eye : CupertinoIcons.eye_slash,

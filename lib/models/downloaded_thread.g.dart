@@ -168,6 +168,17 @@ class DownloadedThreadFields {
     fieldName: 'isArchivedOnServer',
     merger: PrimitiveMerger(),
   );
+  static DateTime? getPendingDeleteAt(DownloadedThread x) => x.pendingDeleteAt;
+  static void setPendingDeleteAt(DownloadedThread x, DateTime? v) =>
+      x.pendingDeleteAt = v;
+  static const int kPendingDeleteAt = 15;
+  static const pendingDeleteAt = HiveFieldAdapter<DownloadedThread, DateTime?>(
+    getter: getPendingDeleteAt,
+    setter: setPendingDeleteAt,
+    fieldNumber: kPendingDeleteAt,
+    fieldName: 'pendingDeleteAt',
+    merger: PrimitiveMerger(),
+  );
 }
 
 class DownloadedThreadAdapter extends TypeAdapter<DownloadedThread> {
@@ -195,13 +206,14 @@ class DownloadedThreadAdapter extends TypeAdapter<DownloadedThread> {
     11: DownloadedThreadFields.lastSyncedAt,
     12: DownloadedThreadFields.errorMessage,
     13: DownloadedThreadFields.localThumbnailFilename,
-    14: DownloadedThreadFields.isArchivedOnServer
+    14: DownloadedThreadFields.isArchivedOnServer,
+    15: DownloadedThreadFields.pendingDeleteAt
   };
 
   @override
   DownloadedThread read(BinaryReader reader) {
     final numOfFields = reader.readByte();
-    final List<dynamic> fields = List.filled(15, null);
+    final List<dynamic> fields = List.filled(16, null);
     for (int i = 0; i < numOfFields; i++) {
       final int fieldId = reader.readByte();
       final dynamic value = reader.read();
@@ -225,13 +237,14 @@ class DownloadedThreadAdapter extends TypeAdapter<DownloadedThread> {
       errorMessage: fields[12] as String?,
       localThumbnailFilename: fields[13] as String?,
       isArchivedOnServer: fields[14] as bool,
+      pendingDeleteAt: fields[15] as DateTime?,
     );
   }
 
   @override
   void write(BinaryWriter writer, DownloadedThread obj) {
     writer
-      ..writeByte(15)
+      ..writeByte(16)
       ..writeByte(0)
       ..write(obj.imageboardKey)
       ..writeByte(1)
@@ -261,7 +274,9 @@ class DownloadedThreadAdapter extends TypeAdapter<DownloadedThread> {
       ..writeByte(13)
       ..write(obj.localThumbnailFilename)
       ..writeByte(14)
-      ..write(obj.isArchivedOnServer);
+      ..write(obj.isArchivedOnServer)
+      ..writeByte(15)
+      ..write(obj.pendingDeleteAt);
   }
 
   @override
