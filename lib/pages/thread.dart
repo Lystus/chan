@@ -2204,10 +2204,18 @@ class ThreadPageState extends State<ThreadPage> {
 																		if (cachedPosts != null) return cachedPosts;
 																		final loaded = await persistentState.ensureThreadLoaded();
 																		if (loaded != null) return loaded.posts;
-																		// Cache was evicted — fall through to a live network fetch
-																		// so we can repopulate rather than crashing with null.
+																		// Cache was evicted before the preservation fix was deployed.
+																		// Fall through to a live network fetch to repopulate the cache.
 																	}
-																	return (await _getUpdatedThread(options.cancelToken)).posts;
+																	final freshPosts = (await _getUpdatedThread(options.cancelToken)).posts;
+																	// If the fetch succeeded and the thread is live, correct the stale
+																	// isArchivedOnServer flag so future refreshes use the normal path.
+																	final dlRecord = ThreadDownloadService.instance.getStatus(widget.thread, imageboard.key);
+																	if (dlRecord?.isArchivedOnServer == true && !persistentState.disableUpdates) {
+																		dlRecord!.isArchivedOnServer = false;
+																		await dlRecord.save();
+																	}
+																	return freshPosts;
 																},
 																controller: _listController,
 																itemBuilder: (context, post, options) {
