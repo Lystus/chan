@@ -2203,7 +2203,9 @@ class ThreadPageState extends State<ThreadPage> {
 																		final cachedPosts = persistentState.thread?.posts;
 																		if (cachedPosts != null) return cachedPosts;
 																		final loaded = await persistentState.ensureThreadLoaded();
-																		return loaded?.posts;
+																		if (loaded != null) return loaded.posts;
+																		// Cache was evicted — fall through to a live network fetch
+																		// so we can repopulate rather than crashing with null.
 																	}
 																	return (await _getUpdatedThread(options.cancelToken)).posts;
 																},
