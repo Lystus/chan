@@ -309,6 +309,130 @@ class _DownloadedThreadsPageState extends State<DownloadedThreadsPage> {
 		));
 	}
 
+	Future<void> _updateSelected() async {
+		final selected = _sortedDownloads.where((d) => _selectedBoxKeys.contains(d.boxKey)).toList();
+		for (final d in selected) {
+			final imageboard = ImageboardRegistry.instance.getImageboard(d.imageboardKey);
+			if (imageboard == null) continue;
+			await ThreadDownloadService.instance.updateThread(d.identifier, imageboard.site, d.imageboardKey);
+		}
+		if (!mounted) return;
+		setState(_reload);
+	}
+
+	Future<void> _undoDeleteSelected() async {
+		final selected = _sortedDownloads.where((d) => _selectedBoxKeys.contains(d.boxKey)).toList();
+		for (final d in selected) {
+			await ThreadDownloadService.instance.undoDeleteDownload(d.identifier, d.imageboardKey);
+		}
+		if (!mounted) return;
+		setState(() {
+			_selectedBoxKeys.clear();
+			_isSelecting = false;
+			_reload();
+		});
+	}
+
+	Future<void> _hardDeleteSelected() async {
+		final selected = _sortedDownloads.where((d) => _selectedBoxKeys.contains(d.boxKey)).toList();
+		for (final d in selected) {
+			await ThreadDownloadService.instance.hardDeleteDownload(d.identifier, d.imageboardKey);
+		}
+		if (!mounted) return;
+		setState(() {
+			_selectedBoxKeys.clear();
+			_isSelecting = false;
+			_reload();
+		});
+	}
+
+	void _showBulkActionSheet(BuildContext context) {
+		mediumHapticFeedback();
+		final selected = _sortedDownloads.where((d) => _selectedBoxKeys.contains(d.boxKey)).toList();
+		final anyUpdatable = selected.any((d) => d.status == DownloadStatus.complete || d.status == DownloadStatus.failed || d.status == DownloadStatus.cancelled);
+		final anySoftDeleted = selected.any((d) => d.pendingDeleteAt != null);
+		final anyNotSoftDeleted = selected.any((d) => d.pendingDeleteAt == null);
+		final anySynced = selected.any((d) => d.syncedFiles > 0);
+		showAdaptiveModalPopup(
+			context: context,
+			builder: (popupContext) => AdaptiveActionSheet(
+				actions: [
+					if (anyUpdatable)
+						AdaptiveActionSheetAction(
+							child: const Text('Update'),
+							onPressed: () {
+								Navigator.pop(popupContext);
+								_updateSelected();
+							},
+						),
+					if (Persistence.settings.copypartyEnabled && selected.any((d) => d.status == DownloadStatus.complete))
+						AdaptiveActionSheetAction(
+							child: const Text('Upload to CopyParty'),
+							onPressed: () {
+								Navigator.pop(popupContext);
+								_migrateSelected();
+							},
+						),
+					if (Persistence.settings.copypartyEnabled && anySynced)
+						AdaptiveActionSheetAction(
+							child: const Text('Move to local'),
+							onPressed: () {
+								Navigator.pop(popupContext);
+								_moveSelectedToLocal();
+							},
+						),
+					if (anySoftDeleted)
+						AdaptiveActionSheetAction(
+							child: const Text('Undo delete'),
+							onPressed: () {
+								Navigator.pop(popupContext);
+								_undoDeleteSelected();
+							},
+						),
+					if (anyNotSoftDeleted)
+						AdaptiveActionSheetAction(
+							isDestructiveAction: true,
+							child: const Text('Delete'),
+							onPressed: () {
+								Navigator.pop(popupContext);
+								_deleteSelected();
+							},
+						),
+					AdaptiveActionSheetAction(
+						isDestructiveAction: true,
+						child: const Text('Delete permanently'),
+						onPressed: () async {
+							Navigator.pop(popupContext);
+							final count = selected.length;
+							final confirmed = await showAdaptiveDialog<bool>(
+								context: context,
+								builder: (ctx) => AdaptiveAlertDialog(
+									title: Text('Delete $count thread${count == 1 ? '' : 's'} immediately?'),
+									content: const Text('This will permanently delete all selected threads and their files. This cannot be undone.'),
+									actions: [
+										AdaptiveDialogAction(
+											child: const Text('Cancel'),
+											onPressed: () => Navigator.pop(ctx, false),
+										),
+										AdaptiveDialogAction(
+											child: const Text('Delete', style: TextStyle(color: CupertinoColors.destructiveRed)),
+											onPressed: () => Navigator.pop(ctx, true),
+										),
+									],
+								),
+							);
+							if (confirmed == true) await _hardDeleteSelected();
+						},
+					),
+				],
+				cancelButton: AdaptiveActionSheetAction(
+					child: const Text('Cancel'),
+					onPressed: () => Navigator.pop(popupContext),
+				),
+			),
+		);
+	}
+
 	Future<void> _migrateSelected() async {
 		final selected = _sortedDownloads.where((d) => _selectedBoxKeys.contains(d.boxKey)).toList();
 		await showAdaptiveDialog(
@@ -378,8 +502,8 @@ class _DownloadedThreadsPageState extends State<DownloadedThreadsPage> {
 						if (_selectedBoxKeys.isNotEmpty)
 							CupertinoButton(
 								padding: EdgeInsets.zero,
-								onPressed: _deleteSelected,
-								child: const Icon(CupertinoIcons.trash),
+								onPressed: () => _showBulkActionSheet(context),
+								child: const Icon(CupertinoIcons.ellipsis),
 							),
 					],
 				)

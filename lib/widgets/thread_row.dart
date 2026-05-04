@@ -148,7 +148,7 @@ TextSpan buildThreadCounters({
 			children: [
 				IconSpan(icon: CupertinoIcons.arrow_up, color: otherMetadataColor, size: 18),
 				space,
-				TextSpan(text: latestThread.posts_.first.upvotes?.toString() ?? '—', style: TextStyle(color: otherMetadataColor)),
+				TextSpan(text: latestThread.posts_.tryFirst?.upvotes?.toString() ?? '—', style: TextStyle(color: otherMetadataColor)),
 			]
 		),
 		if (settings.showReplyCountInCatalog) TextSpan(
@@ -400,6 +400,7 @@ class ThreadRow extends StatelessWidget {
 		final borderRadius = (style.isGrid && settings.catalogGridModeCellBorderRadiusAndMargin) ? const BorderRadius.all(Radius.circular(8)) : BorderRadius.zero;
 		final double subheaderFontSize = site.classicCatalogStyle ? 16 : 15;
 		final spaceSpan = site.classicCatalogStyle ? const TextSpan(text: ' ') : const TextSpan(text: ' ', style: TextStyle(fontSize: 15));
+		if (latestThread.posts_.isEmpty) return const SizedBox.shrink();
 		final op = latestThread.posts_.first;
 		final headerRow = [
 			if (
