@@ -2183,11 +2183,13 @@ class ThreadPageState extends State<ThreadPage> {
 																},
 																listUpdater: (options) async {
 																	// An imported/archived thread should never hit the network.
-																	// Check disableUpdates (thread already loaded in memory) OR the
-																	// DownloadedThread record's isArchivedOnServer flag (thread not yet
-																	// loaded from cache). This handles both timing scenarios.
+																	// Check disableUpdates (thread already loaded in memory), the
+																	// DownloadedThread record's isArchivedOnServer flag, OR a complete
+																	// download status (complete downloads are always served offline).
+																	final dlRecord = ThreadDownloadService.instance.getStatus(widget.thread, imageboard.key);
 																	final isOffline = persistentState.disableUpdates ||
-																		(ThreadDownloadService.instance.getStatus(widget.thread, imageboard.key)?.isArchivedOnServer == true);
+																		(dlRecord?.isArchivedOnServer == true) ||
+																		(dlRecord?.status == DownloadStatus.complete);
 																	if (isOffline) {
 																		if (_listController.state?.originalList != null) {
 																			if (options.source.manual) {
@@ -2201,7 +2203,7 @@ class ThreadPageState extends State<ThreadPage> {
 																		}
 																		// First load: serve from cache without a network request.
 																		final cachedPosts = persistentState.thread?.posts;
-																		if (cachedPosts != null) return cachedPosts;
+																		if (cachedPosts != null && cachedPosts.isNotEmpty) return cachedPosts;
 																		final loaded = await persistentState.ensureThreadLoaded();
 																		if (loaded != null) return loaded.posts;
 																		// Cache was evicted before the preservation fix was deployed.
@@ -2211,6 +2213,13 @@ class ThreadPageState extends State<ThreadPage> {
 																	try {
 																		freshPosts = (await _getUpdatedThread(options.cancelToken)).posts;
 																	} on ThreadNotFoundException {
+																		// If a complete download exists, preserve its data: just flag the record as
+																		// archived on server so future opens use the offline path. Never tombstone.
+																		if (dlRecord?.status == DownloadStatus.complete) {
+																			dlRecord!.isArchivedOnServer = true;
+																			await dlRecord.save();
+																			return const <Post>[];
+																		}
 																		// Thread is confirmed gone from the server and its cache was already
 																		// evicted. Save a tombstone so future opens serve from cache (isArchived=true
 																		// drives disableUpdates) instead of retrying the 404 every time.
@@ -2232,7 +2241,6 @@ class ThreadPageState extends State<ThreadPage> {
 																	}
 																	// Fetch succeeded and the thread is live — correct the stale
 																	// isArchivedOnServer flag so future refreshes use the normal path.
-																	final dlRecord = ThreadDownloadService.instance.getStatus(widget.thread, imageboard.key);
 																	if (dlRecord?.isArchivedOnServer == true && !persistentState.disableUpdates) {
 																		dlRecord!.isArchivedOnServer = false;
 																		await dlRecord.save();

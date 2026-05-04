@@ -331,7 +331,9 @@ class ThreadRow extends StatelessWidget {
 		final theme = context.watch<SavedTheme>();
 		final imageboard = context.watch<Imageboard>();
 		final site = context.watch<ImageboardSite>();
-		final latestThread = threadState?.thread ?? thread;
+		// If the cached thread is a tombstone (empty posts_), fall back to the
+		// stub thread so rows don't become invisible in the saved-threads list.
+		final latestThread = (threadState?.thread?.posts_.isNotEmpty == true) ? threadState!.thread! : thread;
 		final int latestReplyCount = max(max(thread.replyCount, latestThread.replyCount), (site.isPaged || thread.isEndless) ? 0 : (latestThread.posts_.length - 1));
 		final grey = theme.primaryColorWithBrightness(0.6);
 		String? threadAsUrl;
