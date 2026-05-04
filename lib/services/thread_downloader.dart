@@ -247,6 +247,10 @@ class ThreadDownloadService {
 				await dir.delete(recursive: true);
 			}
 			await _box.delete(key);
+			// Also remove from the shared caches so there are no orphaned entries.
+			await Persistence.setCachedThread(imageboardKey, record.board, record.threadId, null);
+			await Persistence.sharedThreadStateBox.delete(
+				Persistence.getThreadStateBoxKey(imageboardKey, record.identifier));
 		});
 		_pendingCancels.remove(key);
 		_mutexes.remove(key);

@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:chan/models/downloaded_thread.dart';
+import 'package:chan/models/post.dart';
 import 'package:chan/util.dart';
 import 'package:chan/models/thread.dart';
 import 'package:chan/pages/thread.dart';
@@ -557,6 +558,31 @@ class _DownloadedThreadRowState extends State<_DownloadedThreadRow> {
 		}
 	}
 
+	Thread _buildStubThread(DownloadedThread d) {
+		final stubPost = Post(
+			board: d.board,
+			text: '',
+			name: '',
+			time: d.downloadedAt,
+			threadId: d.threadId,
+			id: d.threadId,
+			spanFormat: PostSpanFormat.stub,
+			attachments_: const [],
+		);
+		return Thread(
+			posts_: [stubPost],
+			isArchived: d.isArchivedOnServer,
+			replyCount: 0,
+			imageCount: 0,
+			id: d.threadId,
+			board: d.board,
+			title: d.title ?? '/${d.board}/ #${d.threadId}',
+			isSticky: false,
+			time: d.downloadedAt,
+			attachments: const [],
+		);
+	}
+
 	Future<void> _loadThread() async {
 		final d = widget.download;
 		if (!Persistence.isThreadCached(d.imageboardKey, d.board, d.threadId)) return;
@@ -582,7 +608,7 @@ class _DownloadedThreadRowState extends State<_DownloadedThreadRow> {
 	Widget build(BuildContext context) {
 		final d = widget.download;
 		final imageboard = ImageboardRegistry.instance.getImageboard(d.imageboardKey);
-		final thread = _thread;
+		final thread = _thread ?? (imageboard != null ? _buildStubThread(d) : null);
 		final theme = context.watch<SavedTheme>();
 		final progress = d.totalFiles > 0 ? d.downloadedFiles / d.totalFiles : null;
 		final canOpen = d.status == DownloadStatus.complete || d.status == DownloadStatus.failed || d.status == DownloadStatus.cancelled;
@@ -601,7 +627,7 @@ class _DownloadedThreadRowState extends State<_DownloadedThreadRow> {
 						crossAxisAlignment: CrossAxisAlignment.stretch,
 						children: [
 							Row(
-								crossAxisAlignment: CrossAxisAlignment.start,
+								crossAxisAlignment: CrossAxisAlignment.center,
 								children: [
 									Expanded(
 										child: ImageboardScope(
@@ -839,31 +865,6 @@ class _DownloadedThreadRowState extends State<_DownloadedThreadRow> {
 								widget.onUndoDelete();
 							},
 						),
-						AdaptiveActionSheetAction(
-							isDestructiveAction: true,
-							child: const Text('Delete now'),
-							onPressed: () async {
-								Navigator.pop(popupContext);
-								final confirmed = await showAdaptiveDialog<bool>(
-									context: context,
-									builder: (ctx) => AdaptiveAlertDialog(
-										title: const Text('Delete immediately?'),
-										content: const Text('This will permanently delete the thread and all its files. This cannot be undone.'),
-										actions: [
-											AdaptiveDialogAction(
-												child: const Text('Cancel'),
-												onPressed: () => Navigator.pop(ctx, false),
-											),
-											AdaptiveDialogAction(
-												child: const Text('Delete', style: TextStyle(color: CupertinoColors.destructiveRed)),
-												onPressed: () => Navigator.pop(ctx, true),
-											),
-										],
-									),
-								);
-								if (confirmed == true) widget.onHardDelete();
-							},
-						),
 					] else
 						AdaptiveActionSheetAction(
 							isDestructiveAction: true,
@@ -873,6 +874,31 @@ class _DownloadedThreadRowState extends State<_DownloadedThreadRow> {
 								widget.onDelete();
 							},
 						),
+					AdaptiveActionSheetAction(
+						isDestructiveAction: true,
+						child: const Text('Delete permanently'),
+						onPressed: () async {
+							Navigator.pop(popupContext);
+							final confirmed = await showAdaptiveDialog<bool>(
+								context: context,
+								builder: (ctx) => AdaptiveAlertDialog(
+									title: const Text('Delete immediately?'),
+									content: const Text('This will permanently delete the thread and all its files. This cannot be undone.'),
+									actions: [
+										AdaptiveDialogAction(
+											child: const Text('Cancel'),
+											onPressed: () => Navigator.pop(ctx, false),
+										),
+										AdaptiveDialogAction(
+											child: const Text('Delete', style: TextStyle(color: CupertinoColors.destructiveRed)),
+											onPressed: () => Navigator.pop(ctx, true),
+										),
+									],
+								),
+							);
+							if (confirmed == true) widget.onHardDelete();
+						},
+					)
 				],
 				cancelButton: AdaptiveActionSheetAction(
 					child: const Text('Cancel'),

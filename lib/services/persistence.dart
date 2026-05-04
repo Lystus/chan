@@ -970,10 +970,11 @@ class Persistence extends ChangeNotifier {
 		await LoggingInterceptor.instance.initialize();
 	}
 
-	static Future<void> cleanupThreads(List<Imageboard> imageboards, Duration olderThan) async {
+	static Future<void> cleanupThreads(List<Imageboard> imageboards, Duration olderThan, {Set<String> preserveKeys = const {}}) async {
 		final deadline = DateTime.now().subtract(olderThan);
 		final toPreserve = imageboards.expand((imageboard) => imageboard.persistence.savedPosts.values.map((v) => '${imageboard.key}/${v.post.board.toLowerCase()}/${v.post.threadId}')).toSet();
 		toPreserve.addAll(imageboards.expand((imageboard) => imageboard.persistence.browserState.threadWatches.keys.map((v) => '${imageboard.key}/${v.board.toLowerCase()}/${v.id}')));
+		toPreserve.addAll(preserveKeys);
 		final toDelete = sharedThreadStateBox.mapEntries.where((entry) {
 			final ts = entry.value;
 			return ts.youIds.isEmpty // no replies
@@ -986,6 +987,7 @@ class Persistence extends ChangeNotifier {
 			await sharedThreadStateBox.deleteAll(toDelete);
 		}
 		final toPreserve2 = sharedThreadStateBox.keys.toSet();
+		toPreserve2.addAll(preserveKeys);
 		final cachedThreadKeys = sharedThreadsBox.keys.toSet();
 		cachedThreadKeys.removeAll(toPreserve2);
 		if (cachedThreadKeys.isNotEmpty) {

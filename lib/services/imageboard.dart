@@ -14,8 +14,7 @@ import 'package:chan/services/notifications.dart';
 import 'package:chan/services/outbox.dart';
 import 'package:chan/services/persistence.dart';
 import 'package:chan/services/settings.dart';
-import 'package:chan/services/share.dart';
-import 'package:chan/services/thread_watcher.dart';
+import 'package:chan/services/share.dart';import 'package:chan/services/thread_downloader.dart';import 'package:chan/services/thread_watcher.dart';
 import 'package:chan/services/util.dart';
 import 'package:chan/sites/imageboard_site.dart';
 import 'package:chan/util.dart';
@@ -638,7 +637,10 @@ class ImageboardRegistry extends ChangeNotifier {
 				await Future.wait(initializations);
 				if (Persistence.settings.automaticCacheClearDays < 100000) {
 					await dev?._initializedCompleter.future;
-					await Persistence.cleanupThreads(imageboardsIncludingDev.toList(), Duration(days: Persistence.settings.automaticCacheClearDays));
+					final downloadedKeys = ThreadDownloadService.instance.allDownloads
+							.map((d) => '${d.imageboardKey}/${d.board.toLowerCase()}/${d.threadId}')
+							.toSet();
+					await Persistence.cleanupThreads(imageboardsIncludingDev.toList(), Duration(days: Persistence.settings.automaticCacheClearDays), preserveKeys: downloadedKeys);
 				}
 				final initialTabsLength = Persistence.tabs.length;
 				final initialTab = Persistence.tabs[Persistence.currentTabIndex];
