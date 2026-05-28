@@ -637,18 +637,7 @@ class ImageboardRegistry extends ChangeNotifier {
 					initializations.add(_sites[entry.key]!.initialize());
 				}
 				await Future.wait(initializations);
-				if (Persistence.settings.automaticCacheClearDays < 100000) {
-					await dev?._initializedCompleter.future;
-					await Persistence.cleanupThreads(
-						imageboardsIncludingDev.toList(),
-						Duration(days: Persistence.settings.automaticCacheClearDays),
-						// Guard against the startup race where _backfillIsDownloaded
-						// (fire-and-forget in resumePending) hasn't run yet.
-						// On second+ launch all records already have isDownloaded=true
-						// so this set is redundant but cheap.
-						extraPreserveKeys: ThreadDownloadService.instance.allDownloadedStateKeys,
-					);
-				}
+
 				final initialTabsLength = Persistence.tabs.length;
 				final initialTab = Persistence.tabs[Persistence.currentTabIndex];
 				final initialTabIndex = Persistence.currentTabIndex;
@@ -670,7 +659,19 @@ class ImageboardRegistry extends ChangeNotifier {
 				await Future.wait(Persistence.tabs.map((tab) => tab.initialize()));
 				if (initialTabsLength != Persistence.tabs.length) {
 					Persistence.saveTabs();
-				Persistence.globalTabMutator.value = Persistence.currentTabIndex;
+					Persistence.globalTabMutator.value = Persistence.currentTabIndex;
+				}
+				if (Persistence.settings.automaticCacheClearDays < 100000) {
+					await dev?._initializedCompleter.future;
+					await Persistence.cleanupThreads(
+					imageboardsIncludingDev.toList(),
+					Duration(days: Persistence.settings.automaticCacheClearDays),
+					// Guard against the startup race where _backfillIsDownloaded
+					// (fire-and-forget in resumePending) hasn't run yet.
+					// On second+ launch all records already have isDownloaded=true
+					// so this set is redundant but cheap.
+					extraPreserveKeys: ThreadDownloadService.instance.allDownloadedStateKeys,
+				);
 				}
 			}
 			catch (e, st) {
