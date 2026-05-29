@@ -506,6 +506,7 @@ class AttachmentViewerController extends ChangeNotifier {
     controller.player.stream.log.listen(_onPlayerLog);
     controller.player.stream.videoParams.listen(_onPlayerVideoParams);
     controller.player.stream.playing.listen(_onPlayerPlaying);
+    controller.player.stream.completed.listen(_onPlayerCompleted);
     final platformPlayer = player.platform;
     if (platformPlayer is NativePlayer) {
       await platformPlayer.setProperty('cache-on-disk', 'no');
@@ -558,6 +559,28 @@ class AttachmentViewerController extends ChangeNotifier {
       Wakelock.acquire(this);
     } else {
       Wakelock.release(this);
+    }
+  }
+
+  void _onPlayerCompleted(bool completed) {
+    if (!completed || _isDisposed) return;
+    // PlaylistMode.single should auto-loop, but if it fails (e.g. HLS streams,
+    // certain codecs), manually restart from the beginning.
+    final controller = _videoPlayerController;
+    if (controller == null || !_isPrimary) return;
+    try {
+      final state = controller.player.state;
+      // If already playing (auto-loop worked), don't interfere.
+      if (state.playing) return;
+      final dur = state.duration;
+      final pos = state.position;
+      if (dur > Duration.zero && (dur - pos) < const Duration(seconds: 2)) {
+        controller.player.seek(Duration.zero);
+        controller.player.play();
+      }
+    } catch (_) {
+      // Player may have been disposed between the null check and state access.
+      // Silently ignore — the user can still tap play or reopen the viewer.
     }
   }
 
