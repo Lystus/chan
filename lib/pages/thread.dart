@@ -1840,6 +1840,17 @@ class ThreadPageState extends State<ThreadPage> {
                                           ))
                                         ]))),
                             actions: [
+                              if (Settings.instance.showImages(
+                                      context, widget.thread.board) &&
+                                  (_listController.items.any((p) =>
+                                          p.item.attachments.any((a) =>
+                                              a.type != AttachmentType.url)) ||
+                                      (bestEffortThread?.imageCount ?? 0) > 0))
+                                AdaptiveIconButton(
+                                    icon: const Icon(
+                                        CupertinoIcons.square_grid_2x2),
+                                    onPressed: () => _showGalleryFromNextImage(
+                                        initiallyShowGrid: true)),
                               GestureDetector(
                                   onLongPress: () =>
                                       _tapWatchButton(long: true),
@@ -2029,17 +2040,6 @@ class ThreadPageState extends State<ThreadPage> {
                                         setState(() {});
                                       }
                                     }),
-                              if (Settings.instance.showImages(
-                                      context, widget.thread.board) &&
-                                  (_listController.items.any((p) =>
-                                          p.item.attachments.any((a) =>
-                                              a.type != AttachmentType.url)) ||
-                                      (bestEffortThread?.imageCount ?? 0) > 0))
-                                AdaptiveIconButton(
-                                    icon: const Icon(
-                                        CupertinoIcons.square_grid_2x2),
-                                    onPressed: () => _showGalleryFromNextImage(
-                                        initiallyShowGrid: true)),
                               Builder(
                                   builder: (context) => AdaptiveIconButton(
                                       key: _shareButtonKey,

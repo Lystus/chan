@@ -517,7 +517,8 @@ class ThreadDownloadService {
       final filename = Uri.parse(attachment.url).pathSegments.lastOrNull;
       if (filename == null) continue;
       final file = _fileForName(r, filename);
-      return file.existsSync() ? file : null;
+      if (!file.existsSync()) continue;
+      return file;
     }
     return null;
   }

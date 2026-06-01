@@ -798,7 +798,14 @@ class AttachmentViewerController extends ChangeNotifier {
         if (attachment.type == AttachmentType.image &&
             goodImageSource != null &&
             !force) {
-          final file = await getCachedImageFile(goodImageSource.toString());
+          final File? file;
+          if (goodImageSource!.isScheme('file')) {
+            // Local file — getCachedImageFile only handles HTTP cache keys
+            final localFile = File(goodImageSource!.toFilePath());
+            file = localFile.existsSync() ? localFile : null;
+          } else {
+            file = await getCachedImageFile(goodImageSource.toString());
+          }
           if (file != null && _cachedFile?.path != file.path) {
             _onCacheCompleted(file);
           }
